@@ -1,4 +1,4 @@
-#+TITLE: ma-cgr — Create GitHub repos safely with auth-source
+#+TITLE: ma-cgr — Create Github Repos safely with auth-source
 #+AUTHOR: Jacques Cretinon
 #+DATE: <2025-12-21>
 #+OPTIONS: toc:2 num:t ^:{}
@@ -6,7 +6,7 @@
 
 This Org file is a *literate* version of the =ma-cgr= package. It lets you
 read the commentary and evaluate code *step by step* from Emacs. The package
-helps you create GitHub repositories safely using Emacs’ =auth-source= (e.g.,
+helps you Create Github Repositories safely using Emacs’ =auth-source= (e.g.,
 =~/.authinfo.gpg=), with robust Git calls and no token leakage to the shell.
 
 Original idea from https://github.com/rafaelbeirigo/ma-github
@@ -449,7 +449,7 @@ If PREFERRED-USER is non-nil, prefer that auth-source entry."
 
 In order to test any block below, position your cursor to the begining then =C-c C-c=
 
-** 1) Inspect credentials found via auth-source
+** Inspect credentials found via auth-source
 Evaluate to see which credential(s) will be used. If you have multiple accounts,
 you will be prompted to select.
 
@@ -465,7 +465,7 @@ you will be prompted to select.
     (princ "No credentials found. Please add an auth-source entry.\n")))
 #+end_src
 
-** 2) Create a local repo (no network)
+** Create a local repo (no network)
 Set a directory and initialize a repo with default branch (=main=).
 
 #+begin_src emacs-lisp
@@ -477,7 +477,7 @@ Set a directory and initialize a repo with default branch (=main=).
   (princ (format "Initialized local repo at %s\n" dir)))
 #+end_src
 
-** 3) Add a remote (SSH or HTTPS)
+** Add a remote (SSH or HTTPS)
 This uses your auth-source username to build the remote URL.
 
 #+begin_src emacs-lisp
@@ -488,7 +488,7 @@ This uses your auth-source username to build the remote URL.
   (princ (format "Added SSH remote for %s@github.com\n" user)))
 #+end_src
 
-** 4) Create the GitHub repo only (no local push)
+** Create the GitHub repo only (no local push)
 Useful if you just want to create the repo on the server first.
 
 #+begin_src emacs-lisp
@@ -497,7 +497,7 @@ Useful if you just want to create the repo on the server first.
     (princ (format "Created: %s\n" (cdr (assoc "html_url" resp))))))
 #+end_src
 
-** 5) End-to-end: create, kickstart, and push
+** End-to-end: create, kickstart, and push
 This runs the full workflow in one go. Adjust prompts by changing the arguments.
 - NAME
 - DIR
