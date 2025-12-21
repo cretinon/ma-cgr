@@ -1,7 +1,6 @@
 #+TITLE: ma-cgr — Create Github Repos safely with auth-source
 #+AUTHOR: Jacques Cretinon
 #+DATE: <2025-12-21>
-#+OPTIONS: toc:2 num:t ^:{}
 #+PROPERTY: header-args:emacs-lisp :results output :exports both
 
 This Org file is a *literate* version of the =ma-cgr= package. It lets you
@@ -12,6 +11,9 @@ helps you Create Github Repositories safely using Emacs’ =auth-source= (e.g.,
 Original idea from https://github.com/rafaelbeirigo/ma-github
 
 * Warning
+:PROPERTIES:
+:CUSTOM_ID: warning
+:END:
 
 One step is actually missing in order to have fully automated process.
 Once your repository is created, you'll need to
@@ -22,7 +24,31 @@ git remote set-url origin git@github.com:USER/REPO.git
 
 Everything else looking fine. Enjoy :)
 
+* Table of Contents
+:PROPERTIES:
+:TOC:      :include all :depth 3 :force (depth) :ignore (this) :local (depth)
+:END:
+:CONTENTS:
+- [[#warning][Warning]]
+- [[#prerequisites][Prerequisites]]
+- [[#quick-start][Quick Start]]
+- [[#full-library-source-tangled-to-ma-cgrel][Full Library Source (tangled to ma-cgr.el)]]
+- [[#step-by-step-tests][Step-by-step Tests]]
+  - [[#inspect-credentials-found-via-auth-source][Inspect credentials found via auth-source]]
+  - [[#create-a-local-repo-no-network][Create a local repo (no network)]]
+  - [[#add-a-remote-ssh-or-https][Add a remote (SSH or HTTPS)]]
+  - [[#create-the-github-repo-only-no-local-push][Create the GitHub repo only (no local push)]]
+  - [[#end-to-end-create-kickstart-and-push][End-to-end: create, kickstart, and push]]
+- [[#customization][Customization]]
+- [[#troubleshooting][Troubleshooting]]
+- [[#cleanup-optional][Cleanup (optional)]]
+- [[#license][License]]
+:END:
+
 * Prerequisites
+:PROPERTIES:
+:CUSTOM_ID: prerequisites
+:END:
 
 - Emacs 26.1+
 - =git= installed and in your PATH
@@ -38,13 +64,20 @@ Everything else looking fine. Enjoy :)
   Emacs encrypt when saving via EasyPG.
 
 * Quick Start
+:PROPERTIES:
+:CUSTOM_ID: quick-start
+:END:
 
 1. Open this file in Emacs.
 2. *Tangle* the library source to produce =ma-cgr.el=: =M-x org-babel-tangle=
 3. Load the library: =M-x load-file= RET path/to/=ma-cgr.el=
 4. Try the step-by-step blocks in the sections below.
+5. Or create a repository =M-x ma-cgr-create=
 
 * Full Library Source (tangled to =ma-cgr.el=)
+:PROPERTIES:
+:CUSTOM_ID: full-library-source-tangled-to-ma-cgrel
+:END:
 
 The block below contains the *entire* package. Tangle it to generate
 =ma-cgr.el= which you can then =load-file= or add to your load-path.
@@ -446,10 +479,16 @@ If PREFERRED-USER is non-nil, prefer that auth-source entry."
 #+end_src
 
 * Step-by-step Tests
+:PROPERTIES:
+:CUSTOM_ID: step-by-step-tests
+:END:
 
 In order to test any block below, position your cursor to the begining then =C-c C-c=
 
 ** Inspect credentials found via auth-source
+:PROPERTIES:
+:CUSTOM_ID: inspect-credentials-found-via-auth-source
+:END:
 Evaluate to see which credential(s) will be used. If you have multiple accounts,
 you will be prompted to select.
 
@@ -466,6 +505,9 @@ you will be prompted to select.
 #+end_src
 
 ** Create a local repo (no network)
+:PROPERTIES:
+:CUSTOM_ID: create-a-local-repo-no-network
+:END:
 Set a directory and initialize a repo with default branch (=main=).
 
 #+begin_src emacs-lisp
@@ -478,6 +520,9 @@ Set a directory and initialize a repo with default branch (=main=).
 #+end_src
 
 ** Add a remote (SSH or HTTPS)
+:PROPERTIES:
+:CUSTOM_ID: add-a-remote-ssh-or-https
+:END:
 This uses your auth-source username to build the remote URL.
 
 #+begin_src emacs-lisp
@@ -489,6 +534,9 @@ This uses your auth-source username to build the remote URL.
 #+end_src
 
 ** Create the GitHub repo only (no local push)
+:PROPERTIES:
+:CUSTOM_ID: create-the-github-repo-only-no-local-push
+:END:
 Useful if you just want to create the repo on the server first.
 
 #+begin_src emacs-lisp
@@ -498,6 +546,9 @@ Useful if you just want to create the repo on the server first.
 #+end_src
 
 ** End-to-end: create, kickstart, and push
+:PROPERTIES:
+:CUSTOM_ID: end-to-end-create-kickstart-and-push
+:END:
 This runs the full workflow in one go. Adjust prompts by changing the arguments.
 - NAME
 - DIR
@@ -522,6 +573,9 @@ This runs the full workflow in one go. Adjust prompts by changing the arguments.
 #+end_src
 
 * Customization
+:PROPERTIES:
+:CUSTOM_ID: customization
+:END:
 
 - =M-x customize-group RET ma-cgr RET=
   - =ma-cgr-default-branch=
@@ -530,6 +584,9 @@ This runs the full workflow in one go. Adjust prompts by changing the arguments.
   - Hooks: =ma-cgr-create-before-start-hook=, =ma-cgr-create-finalize-hook=
 
 * Troubleshooting
+:PROPERTIES:
+:CUSTOM_ID: troubleshooting
+:END:
 
 - *No credentials found*: Add an entry to =~/.authinfo.gpg= (see header). Then
   restart Emacs or re-evaluate this buffer.
@@ -542,6 +599,9 @@ This runs the full workflow in one go. Adjust prompts by changing the arguments.
 - *Default branch mismatch*: Set =ma-cgr-default-branch= to your org default.
 
 * Cleanup (optional)
+:PROPERTIES:
+:CUSTOM_ID: cleanup-optional
+:END:
 
 Remove the demo directory created above.
 
@@ -553,6 +613,9 @@ Remove the demo directory created above.
 #+end_src
 
 * License
+:PROPERTIES:
+:CUSTOM_ID: license
+:END:
 
 MIT License
 
