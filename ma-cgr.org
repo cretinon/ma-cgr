@@ -1,0 +1,566 @@
+#+TITLE: ma-cgr — Create GitHub repos safely with auth-source
+#+AUTHOR: Jacques Cretinon
+#+DATE: <2025-12-21>
+#+OPTIONS: toc:2 num:t ^:{}
+#+PROPERTY: header-args:emacs-lisp :results output :exports both
+
+This Org file is a *literate* version of the =ma-cgr= package. It lets you
+read the commentary and evaluate code *step by step* from Emacs. The package
+helps you create GitHub repositories safely using Emacs’ =auth-source= (e.g.,
+=~/.authinfo.gpg=), with robust Git calls and no token leakage to the shell.
+
+Original idea from https://github.com/rafaelbeirigo/ma-github
+
+* Prerequisites
+
+- Emacs 26.1+
+- =git= installed and in your PATH
+- A GitHub Personal Access Token (classic or fine-grained) with =repo= scope
+- An =auth-source= entry containing your username and token (recommended in
+  =~/.authinfo.gpg=). Example entry:
+
+  #+begin_example
+  machine api.github.com login YOUR_GITHUB_USERNAME password ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXX port 443
+  #+end_example
+
+  You can create =~/.authinfo.gpg= by running =M-x epa-encrypt-file= or letting
+  Emacs encrypt when saving via EasyPG.
+
+* Quick Start
+
+1. Open this file in Emacs.
+2. *Tangle* the library source to produce =ma-cgr.el=: =M-x org-babel-tangle=
+3. Load the library: =M-x load-file= RET path/to/=ma-cgr.el=
+4. Try the step-by-step blocks in the sections below.
+
+* Full Library Source (tangled to =ma-cgr.el=)
+
+The block below contains the *entire* package. Tangle it to generate
+=ma-cgr.el= which you can then =load-file= or add to your load-path.
+
+#+begin_src emacs-lisp :tangle ma-cgr.el :mkdirp yes
+;;; ma-cgr.el --- Create GitHub repos safely from Emacs (auth-source) -*- lexical-binding: t; -*-
+
+;; Author: Jacques Cretinon
+;; Keywords: git, tools
+;; Package-Requires: ((emacs "26.1"))
+;; Version: 0.1
+
+;;; Commentary:
+;;
+;; Safely create a GitHub repository and bootstrap a local git repo.
+;; - Credentials (username + token) fetched via auth-source (e.g., ~/.authinfo.gpg).
+;; - No token in shell command lines; API uses url.el with headers.
+;; - Git ops use call-process to avoid shell injection.
+;; - Supports SSH or HTTPS remotes.
+;; - Defaults to 'main' branch.
+;;
+
+;;; Code:
+
+(require 'json)
+(require 'url)
+(require 'auth-source)
+
+(defgroup ma-cgr nil
+  "Interact with GitHub."
+  :group 'tools)
+
+(defcustom ma-cgr-url "https://api.github.com/user/repos"
+  "GitHub API endpoint used to create a new repository."
+  :type 'string
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-auth-hosts '("api.github.com" "github.com")
+  "Hosts to search in auth-source for GitHub credentials (username & token).
+The token should be stored as the `password` for the host."
+  :type '(repeat string)
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-auth-port 443
+  "Port to search in auth-source for GitHub credentials."
+  :type 'integer
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-default-branch "main"
+  "Default branch name to initialize and push."
+  :type 'string
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-remote-method 'ssh
+  "Remote method to configure for Git: either 'ssh or 'https."
+  :type '(choice (const :tag "SSH (git@github.com:USER/REPO.git)" ssh)
+                 (const :tag "HTTPS (https://github.com/USER/REPO.git)" https))
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-auto-init-on-server nil
+  "If non-nil, create README on server via API (auto_init).
+If nil, the local bootstrap creates README and commits it."
+  :type 'boolean
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-create-before-start-hook nil
+  "Hook run at the start of ‘ma-cgr-create’."
+  :type 'hook
+  :group 'ma-cgr)
+
+(defcustom ma-cgr-create-finalize-hook nil
+  "Hook run at the end of ‘ma-cgr-create’."
+  :type 'hook
+  :group 'ma-cgr)
+
+(defvar ma-cgr-last-repo-name nil
+  "Name of the last repository created.")
+
+(defvar ma-cgr-last-repo-dir nil
+  "Directory of the last repository created.")
+
+(defvar ma-cgr-last-repo-html-url nil
+  "HTML URL of the last repository created on GitHub.")
+
+;; ------------------------------------------------------------
+;; Utilities
+;; ------------------------------------------------------------
+
+(defun ma-cgr--string-empty-p (s)
+  "Return non-nil if string S is nil or empty."
+  (or (null s) (string= s "")))
+
+(defun ma-cgr--safe-call-process (program args)
+  "Run PROGRAM with ARGS using call-process. Return exit status."
+  (apply #'call-process program nil "*ma-cgr*" t args))
+
+(defun ma-cgr--ensure-dir (dir)
+  "Ensure directory DIR exists."
+  (unless (file-directory-p dir)
+    (make-directory dir t)))
+
+(defun ma-cgr--git (dir &rest args)
+  "Run `git` in DIR with ARGS, return exit status, signal error on non-zero."
+  (let ((status (ma-cgr--safe-call-process "git" (append (list "-C" dir) args))))
+    (when (not (zerop status))
+      (error "Git command failed in %s: git %s (status %s)"
+             dir (mapconcat #'identity args " ") status))
+    status))
+
+(defun ma-cgr--git-initialize (dir)
+  "Initialize a Git repository in DIR with default branch."
+  ;; Prefer 'git init -b <branch>' if supported; fallback to checkout -b.
+  (let* ((branch ma-cgr-default-branch)
+         (status (ma-cgr--safe-call-process
+                  "git" (list "-C" dir "init" "-b" branch))))
+    (when (not (zerop status))
+      ;; Fallback path: git init ., then checkout -b branch
+      (ma-cgr--git dir "init" ".")
+      (ma-cgr--git dir "checkout" "-b" branch))))
+
+(defun ma-cgr--make-readme (dir &optional text)
+  "Create README in DIR with TEXT or a default message."
+  (let ((path (expand-file-name "README" dir)))
+    (with-temp-file path
+      (insert (or text (format "# %s\n\nCreated by Emacs.\n" (file-name-nondirectory dir)))))
+    path))
+
+(defun ma-cgr--git-commit-initial (dir)
+  "Add README and create initial commit in DIR."
+  (let ((readme (expand-file-name "README" dir)))
+    (unless (file-exists-p readme)
+      (ma-cgr--make-readme dir))
+    (ma-cgr--git dir "add" "README")
+    ;; Commit may fail if user.name/user.email not configured, so try and surface a clear error.
+    (condition-case err
+        (ma-cgr--git dir "commit" "-m" "Initial commit")
+      (error
+       (error "Git commit failed: %s. Configure your identity:\n  git config --global user.name \"Your Name\"\n  git config --global user.email \"you@example.com\"" (error-message-string err))))))
+
+(defun ma-cgr--remote-url (user name method)
+  "Return remote URL string for USER, NAME, and METHOD ('ssh or 'https)."
+  (pcase method
+    ('ssh   (format "git@github.com:%s/%s.git" user name))
+    ('https (format "https://github.com/%s/%s.git" user name))
+    (_      (error "Unknown remote method: %s" method))))
+
+(defun ma-cgr--git-add-remote (dir name user &optional method)
+  "Add remote origin in DIR for USER/NAME using METHOD."
+  (let* ((m (or method ma-cgr-remote-method))
+         (remote (ma-cgr--remote-url user name m)))
+    (ma-cgr--git dir "remote" "add" "origin" remote)))
+
+(defun ma-cgr--git-push (dir &optional branch)
+  "Push current branch from DIR to origin, setting upstream."
+  (let ((br (or branch ma-cgr-default-branch)))
+    (ma-cgr--git dir "push" "-u" "origin" br)))
+
+(defun ma-cgr--parse-http-status ()
+  "Parse HTTP status code at point in current buffer."
+  (goto-char (point-min))
+  (when (re-search-forward "^HTTP/\\(?:1\\.[01]\\|2\\) \\([0-9]+\\)" nil t)
+    (string-to-number (match-string 1))))
+
+(defun ma-cgr--buffer-body ()
+  "Return HTTP body from current buffer."
+  (goto-char (point-min))
+  (when (re-search-forward "\n\n" nil t)
+    (buffer-substring (point) (point-max))))
+
+;; ------------------------------------------------------------
+;; auth-source credential lookup
+;; ------------------------------------------------------------
+
+(defun ma-cgr--auth-source-candidates ()
+  "Return a list of plist candidates with :user :token :host from auth-source.
+Searches `ma-cgr-auth-hosts` on `ma-cgr-auth-port` and requires both user and secret."
+  (let (candidates)
+    (dolist (host ma-cgr-auth-hosts)
+      (let ((entries (auth-source-search :host host
+                                         :port ma-cgr-auth-port
+                                         :max 50
+                                         :require '(:user :secret))))
+        (dolist (e entries)
+          (let* ((user (plist-get e :user))
+                 (secret (plist-get e :secret))
+                 (token (if (functionp secret) (funcall secret) secret)))
+            (when (and (stringp user) (stringp token)
+                       (not (string-empty-p user)) (not (string-empty-p token)))
+              (push (list :host host :user user :token token) candidates))))))
+    (nreverse candidates)))
+
+(defun ma-cgr--read-auth (&optional preferred-user)
+  "Return credentials plist (:user :token :host) from auth-source.
+If PREFERRED-USER is non-nil, prefer entries matching it.
+If multiple entries exist, prompt to choose."
+  (let* ((candidates (ma-cgr--auth-source-candidates)))
+    (when (null candidates)
+      (user-error
+       (concat "No GitHub credentials found in auth-source.\n"
+               "Add an entry (recommended in ~/.authinfo.gpg):\n"
+               "  machine api.github.com login YOUR_GITHUB_USERNAME password YOUR_TOKEN port 443")))
+    (let* ((filtered (if preferred-user
+                         (seq-filter (lambda (c)
+                                       (string= (plist-get c :user) preferred-user))
+                                     candidates)
+                       candidates))
+           (choice (cond
+                    ((= (length filtered) 1) (car filtered))
+                    (t
+                     (let* ((display (mapcar (lambda (c)
+                                               (format "%s@%s"
+                                                       (plist-get c :user)
+                                                       (plist-get c :host)))
+                                             filtered))
+                            (picked (completing-read "Use credentials: " display nil t)))
+                       (nth (cl-position picked display :test #'string=) filtered))))))
+      choice)))
+
+;; ------------------------------------------------------------
+;; GitHub API
+;; ------------------------------------------------------------
+
+(defun ma-cgr--github-create (name token private &optional description auto-init)
+  "Create a repo NAME on GitHub using TOKEN.
+If PRIVATE is non-nil, repo will be private; otherwise public.
+Optional DESCRIPTION string, and AUTO-INIT for server-side README."
+  (let* ((url-request-method "POST")
+         (url-request-extra-headers
+          `(("Authorization" . ,(concat "token " token))
+            ("Content-Type" . "application/json")
+            ("Accept" . "application/vnd.github+json")))
+         (payload `(("name" . ,name)
+                    ("private" . ,(and private t))
+                    ,@(when (and description (not (string= "" description)))
+                        `(("description" . ,description)))
+                    ,@(when auto-init
+                        '(("auto_init" . t)))))
+         (url-request-data (json-encode payload))
+         (buf (url-retrieve-synchronously ma-cgr-url t t)))
+    (unless buf (error "Failed to contact GitHub API"))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((status (ma-cgr--parse-http-status))
+                (body (ma-cgr--buffer-body)))
+            (cond
+             ((and status (<= 200 status) (< status 300))
+              (let* ((json-object-type 'alist)
+                     (json-array-type 'list)
+                     (json-key-type 'string)
+                     (resp (and body (ignore-errors (json-read-from-string body))))
+                     (html-url (cdr (assoc "html_url" resp))))
+                (when html-url
+                  (setq ma-cgr-last-repo-html-url html-url))
+                (message "GitHub: repository %s created (%s)"
+                         name (if private "private" "public"))
+                resp))
+             (status
+              (error "GitHub API error (%s): %s" status (or body ""))))))
+      (kill-buffer buf))))
+
+;; ------------------------------------------------------------
+;; Interactive helpers
+;; ------------------------------------------------------------
+
+(defun ma-cgr-repo-ask-name ()
+  "Ask for repository name."
+  (read-string "Repository name: "))
+
+(defun ma-cgr-local-ask-path (name)
+  "Ask for local repository path, defaulting to NAME."
+  (expand-file-name
+   (read-directory-name "Repository dir: " name)))
+
+(defun ma-cgr-ask-repo-info ()
+  "Ask for repository’s name and local path."
+  (let ((name (read-string "Repository name: ")))
+    (list name (ma-cgr-local-ask-path name))))
+
+;; ------------------------------------------------------------
+;; Public interactive commands
+;; ------------------------------------------------------------
+
+;;;###autoload
+(defun ma-cgr-local-create (name dir)
+  "Create a new local repository called NAME inside directory DIR."
+  (interactive (ma-cgr-ask-repo-info))
+  (ma-cgr--ensure-dir dir)
+  (ma-cgr--git-initialize dir)
+  (message "Local repo initialized in %s (branch %s)" dir ma-cgr-default-branch))
+
+;;;###autoload
+(defun ma-cgr-local-kickstart (dir)
+  "Create a README, add it, and commit an initial commit inside DIR."
+  (interactive "DRepository dir: ")
+  (ma-cgr--make-readme dir)
+  (ma-cgr--git-commit-initial dir)
+  (message "Initial commit created in %s" dir))
+
+;;;###autoload
+(defun ma-cgr-local-add-remote (name dir &optional method preferred-user)
+  "Add a Git remote for repository NAME inside DIR.
+METHOD may be 'ssh or 'https; defaults to `ma-cgr-remote-method`.
+If PREFERRED-USER is non-nil, prefer that user from auth-source."
+  (interactive
+   (let* ((info (ma-cgr-ask-repo-info))
+          (method (if (yes-or-no-p "Use SSH remote? ")
+                      'ssh
+                    'https)))
+     (list (car info) (cadr info) method nil)))
+  (let* ((cred (ma-cgr--read-auth preferred-user))
+         (user (plist-get cred :user)))
+    (ma-cgr--git-add-remote dir name user (or method ma-cgr-remote-method))
+    (message "Remote origin added in %s (owner: %s)" dir user)))
+
+;;;###autoload
+(defun ma-cgr-local-push (dir &optional branch)
+  "Run “git push -u origin BRANCH” in repository inside DIR.
+Defaults to `ma-cgr-default-branch`."
+  (interactive "DRepository dir: ")
+  (ma-cgr--git-push dir branch)
+  (message "Pushed %s to origin (upstream set)" (or branch ma-cgr-default-branch)))
+
+;;;###autoload
+(defun ma-cgr-github-create (name private &optional description preferred-user)
+  "Create a repository called NAME on GitHub using credentials from auth-source.
+If PRIVATE is non-nil, the repository is created private; otherwise public.
+Optional DESCRIPTION is sent to the API.
+If PREFERRED-USER is non-nil, prefer that auth-source entry."
+  (interactive (list (ma-cgr-repo-ask-name)
+                     (not (yes-or-no-p "Public? "))
+                     (read-string "Description (optional): ")
+                     nil))
+  (let* ((cred (ma-cgr--read-auth preferred-user))
+         (token (plist-get cred :token)))
+    (ma-cgr--github-create name token private description ma-cgr-auto-init-on-server)))
+
+;;;###autoload
+(defun ma-cgr-create (name dir kickstart git-push private &optional description use-ssh preferred-user)
+  "Create repository called NAME on GitHub, and inside directory DIR.
+
+Credentials (owner + token) are fetched via auth-source.
+If KICKSTART is non-nil, create a README and make an initial commit locally.
+If GIT-PUSH is non-nil, run “git push” inside DIR.
+If PRIVATE is non-nil, the repository will be created private; otherwise public.
+Optional DESCRIPTION sets repo description.
+If USE-SSH is non-nil, configure SSH remote; otherwise HTTPS.
+If PREFERRED-USER is non-nil, prefer that auth-source entry."
+  (interactive
+   (nconc (ma-cgr-ask-repo-info)
+          (list
+           (yes-or-no-p "Initial commit? ")
+           (yes-or-no-p "Push to GitHub? ")
+           (not (yes-or-no-p "Public? "))
+           (read-string "Description (optional): ")
+           (yes-or-no-p "Use SSH remote? ")
+           nil)))
+  (run-hooks 'ma-cgr-create-before-start-hook)
+  (setq ma-cgr-last-repo-name name
+        ma-cgr-last-repo-dir  dir)
+  (let ((progress (make-progress-reporter "Creating repository..." 0 6)))
+    (progress-reporter-update progress 0)
+
+    ;; Credentials (for API + owner for remote).
+    (let* ((cred (ma-cgr--read-auth preferred-user))
+           (user (plist-get cred :user))
+           (token (plist-get cred :token)))
+
+      ;; 1) Local repo
+      (ma-cgr-local-create name dir)
+      (progress-reporter-update progress 1)
+
+      ;; 2) Add remote
+      (ma-cgr--git-add-remote dir name user (if use-ssh 'ssh 'https))
+      (progress-reporter-update progress 2)
+
+      ;; 3) Create repo on GitHub
+      (ma-cgr--github-create name token private description ma-cgr-auto-init-on-server)
+      (progress-reporter-update progress 3)
+
+      ;; 4) Kickstart local commit
+      (when kickstart
+        (ma-cgr-local-kickstart dir))
+      (progress-reporter-update progress 4)
+
+      ;; 5) Push
+      (when git-push
+        (ma-cgr-local-push dir))
+      (progress-reporter-update progress 5))
+
+    (progress-reporter-done progress)
+    (message "Done. Repo: %s%s"
+             (or ma-cgr-last-repo-html-url name)
+             (if ma-cgr-last-repo-html-url
+                 (format " (%s)" ma-cgr-last-repo-html-url) "")))
+  (run-hooks 'ma-cgr-create-finalize-hook))
+
+(provide 'ma-cgr)
+;;; ma-cgr.el ends here
+#+end_src
+
+* Step-by-step Tests
+
+In order to test any block below, position your cursor to the begining then =C-c C-c=
+
+** 1) Inspect credentials found via auth-source
+Evaluate to see which credential(s) will be used. If you have multiple accounts,
+you will be prompted to select.
+
+#+begin_src emacs-lisp
+(require 'ma-cgr)
+(let ((cred (ignore-errors (ma-cgr--read-auth nil))))
+  (if cred
+      (progn
+        (princ (format "Using: %s@%s\n"
+                       (plist-get cred :user)
+                       (plist-get cred :host)))
+        (princ (format "Token length: %d\n" (length (plist-get cred :token)))))
+    (princ "No credentials found. Please add an auth-source entry.\n")))
+#+end_src
+
+** 2) Create a local repo (no network)
+Set a directory and initialize a repo with default branch (=main=).
+
+#+begin_src emacs-lisp
+(setq ma-cgr-default-branch "main")
+(let* ((root (expand-file-name "~/tmp"))
+       (dir  (expand-file-name "ma-gh-demo" root)))
+  (make-directory root t)
+  (ma-cgr-local-create "ma-gh-demo" dir)
+  (princ (format "Initialized local repo at %s\n" dir)))
+#+end_src
+
+** 3) Add a remote (SSH or HTTPS)
+This uses your auth-source username to build the remote URL.
+
+#+begin_src emacs-lisp
+(let* ((cred (ma-cgr--read-auth nil))
+       (user (plist-get cred :user))
+       (dir  (expand-file-name "~/tmp/ma-gh-demo")))
+  (ma-cgr--git-add-remote dir "ma-gh-demo" user 'ssh)
+  (princ (format "Added SSH remote for %s@github.com\n" user)))
+#+end_src
+
+** 4) Create the GitHub repo only (no local push)
+Useful if you just want to create the repo on the server first.
+
+#+begin_src emacs-lisp
+(let ((resp (ma-cgr-github-create "ma-gh-demo" t "Demo created from Emacs Org")))
+  (when (and resp (assoc "html_url" resp))
+    (princ (format "Created: %s\n" (cdr (assoc "html_url" resp))))))
+#+end_src
+
+** 5) End-to-end: create, kickstart, and push
+This runs the full workflow in one go. Adjust prompts by changing the arguments.
+- NAME
+- DIR
+- KICKSTART (t to make README & initial commit)
+- GIT-PUSH (t to push)
+- PRIVATE (t to make it private)
+- DESCRIPTION (string)
+- USE-SSH (t for SSH, nil for HTTPS)
+- PREFERRED-USER (nil or a username string)
+
+#+begin_src emacs-lisp
+(let* ((dir (expand-file-name "~/tmp/ma-gh-demo")))
+  (ma-cgr-create "ma-gh-demo" dir
+                    t   ; initial commit
+                    t   ; push
+                    t   ; private repo
+                    "Demo created via ma-cgr"
+                    t   ; use SSH
+                    nil) ; preferred user
+  (when ma-cgr-last-repo-html-url
+    (princ (format "Repo URL: %s\n" ma-cgr-last-repo-html-url))))
+#+end_src
+
+* Customization
+
+- =M-x customize-group RET ma-cgr RET=
+  - =ma-cgr-default-branch=
+  - =ma-cgr-remote-method=
+  - =ma-cgr-auto-init-on-server=
+  - Hooks: =ma-cgr-create-before-start-hook=, =ma-cgr-create-finalize-hook=
+
+* Troubleshooting
+
+- *No credentials found*: Add an entry to =~/.authinfo.gpg= (see header). Then
+  restart Emacs or re-evaluate this buffer.
+- *Git commit failed (identity)*: Configure your identity:
+  #+begin_example
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"
+  #+end_example
+- *SSH push fails*: Ensure your SSH keys are set up (=ssh -T git@github.com=).
+- *Default branch mismatch*: Set =ma-cgr-default-branch= to your org default.
+
+* Cleanup (optional)
+
+Remove the demo directory created above.
+
+#+begin_src emacs-lisp
+(let ((dir (expand-file-name "~/tmp/ma-gh-demo")))
+  (when (file-directory-p dir)
+    (delete-directory dir t))
+  (princ "Cleaned demo directory.\n"))
+#+end_src
+
+* License
+
+MIT License
+
+Copyright (c) 2025 cretinon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
