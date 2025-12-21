@@ -11,6 +11,17 @@ helps you create GitHub repositories safely using Emacs’ =auth-source= (e.g.,
 
 Original idea from https://github.com/rafaelbeirigo/ma-github
 
+* Warning
+
+One step is actually missing in order to have fully automated process.
+Once your repository is created, you'll need to
+
+#+begin_example
+git remote set-url origin git@github.com:USER/REPO.git
+#+end_example
+
+Everything else looking fine. Enjoy :)
+
 * Prerequisites
 
 - Emacs 26.1+
@@ -19,9 +30,9 @@ Original idea from https://github.com/rafaelbeirigo/ma-github
 - An =auth-source= entry containing your username and token (recommended in
   =~/.authinfo.gpg=). Example entry:
 
-  #+begin_example
+#+begin_example
   machine api.github.com login YOUR_GITHUB_USERNAME password ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXX port 443
-  #+end_example
+#+end_example
 
   You can create =~/.authinfo.gpg= by running =M-x epa-encrypt-file= or letting
   Emacs encrypt when saving via EasyPG.
