@@ -42,6 +42,7 @@ Everything else looking fine. Enjoy :)
 - [[#customization][Customization]]
 - [[#troubleshooting][Troubleshooting]]
 - [[#cleanup-optional][Cleanup (optional)]]
+- [[#installation][Installation]]
 - [[#license][License]]
 :END:
 
@@ -610,6 +611,18 @@ Remove the demo directory created above.
   (when (file-directory-p dir)
     (delete-directory dir t))
   (princ "Cleaned demo directory.\n"))
+#+end_src
+
+* Installation
+You may have something like this in your ~/.emacs.d/init.el
+#+begin_src emacs-lisp
+;;; package --- Summary
+;;; Commentary:
+;;; Code:
+
+(load "~/git/ma-cgr/ma-cgr.el")
+
+;;; init.el ends here
 #+end_src
 
 * License
